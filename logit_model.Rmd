@@ -1,0 +1,382 @@
+---
+title: "Factors of Property Condemnation in Pittsburgh"
+author: "Matt Colantonio"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    toc: true
+    theme: html_clean
+---
+
+# Property Condemnation in Pittsburgh
+
+This project is meant to accomplish two goals:
+
+1.  Determine potential factors that may lead to increased instances of property condemnation (i.e., geographic, demographic, or structural features), and
+2.  Determine impact condemned properties have on property assessments in Pittsburgh.
+
+## 1 Packages
+
+```{r message=FALSE, warning=FALSE}
+# clear environment, console, unused memory
+rm(list = ls()) 
+  gc()            
+  cat("\f")  
+  
+# load necessary packages
+packages <- c("readr", #open csv
+              "psych", # quick summary stats for data exploration,
+              "stargazer", #summary stats for sharing,
+              "tidyverse", # data manipulation like selecting variables
+              "dplyr", # data manipulation 
+              "summarytools", # summary tables
+              "ggplot2", # graphing
+              "ggcorrplot", # correlation plot
+              "car", #vif
+              "prettydoc", # html output
+              "visdat", # visualize missing variables
+              "glmnet", # lasso/ridge
+              "caret", # confusion matrix  
+              "ISLR",
+              "MASS", #step AIC
+              "plm", # fixed effects demeaned regression
+              "lmtest", # test regression coefficients
+              "cvms", 
+              "lavaan", # simple mediation
+              "ROSE" #synthetic oversampling
+              #"DMwR" #synthetic oversampling
+)
+
+for (i in 1:length(packages)) {
+  if (!packages[i] %in% rownames(installed.packages())) {
+    install.packages(packages[i]
+                     , repos = "http://cran.rstudio.com/"
+                     , dependencies = TRUE
+    )
+  }
+  library(packages[i], character.only = TRUE)
+}
+
+rm(packages)
+```
+
+## 2 Data
+
+Data comes from three sources. Most parcel information was supplied generously by Regrid. This parcel data was supplemented by geographic and demographic features from the US Census American community Survey as well. The list of condemned properties and geographic slope files were obtained from the City of Pittsburgh's open GIS data.
+
+Scripts used for the combination and creation of features leading to the dataset used in this file can be found on my github.
+
+```{r}
+df <- read_csv("/Users/matthewcolantonio/Documents/Research/condemned_properties/saveddata/FINAL_parcel_pgh.csv")
+
+df$corporation <- ifelse(df$own_type == "CORPORATION", 1, 0)
+```
+
+### 2.1 Summary Statistics
+
+First it may be helpful to understand some of the characteristic of the neighborhoods and census tracts we are interested in.
+
+```{r}
+# Step 1: Group by census_tract and calculate the total condemned properties in each tract
+condemned_summary <- df %>%
+  group_by(census_tract) %>%
+  summarise(total_condemned = sum(condemned)) %>%
+  arrange(desc(total_condemned)) # Arrange in descending order of condemned properties
+# Step 2: Extract census tracts with the most condemned properties
+top_condemned_tracts <- head(condemned_summary, 20) # Change to however many tracts you want to consider
+top_condemned_tracts
+```
+
+```{r}
+# Step 3: Extract summary statistics for these census tracts
+summary_stats <- df %>%
+  filter(census_tract %in% top_condemned_tracts$census_tract) %>%
+  summarise(Median_HH_Income = median(Median_HH_Income),
+            Tenure_Owner_Occupied_Percentage = mean(Tenure_Owner_Occupied_Percentage),
+            Median_Gross_Rent = median(Median_Gross_Rent))
+
+# Step 4: Calculate summary statistics for the entire dataset
+overall_summary_stats <- df %>%
+  summarise(Median_HH_Income = median(Median_HH_Income),
+            Tenure_Owner_Occupied_Percentage = mean(Tenure_Owner_Occupied_Percentage),
+            Median_Gross_Rent = median(Median_Gross_Rent))
+
+# Step 5: Compare summary stats
+comparison <- rbind(overall_summary_stats, summary_stats)
+rownames(comparison) <- c("Overall", "Top Condemned Tracts")
+
+# Step 6: Print the comparison
+print(comparison)
+```
+
+## 3 Logistic Regressions and Confusion Matrices
+
+I want to see how the model performs in the census tracts most impacted by condemned properties.
+
+```{r}
+# Extract census tracts from top_condemned_tracts
+top_condemned_tracts_census <- top_condemned_tracts$census_tract
+
+# Create a new dataframe containing data for top condemned tracts
+df_top_condemned <- df[df$census_tract %in% top_condemned_tracts_census, ]
+
+
+```
+
+The new dataframe still contains over 23,000 observations. In the 20 census tracts with the most condemned properties, one in every 16 properties is condemned. Residential properties in these tracts are an average of about 40 meters from the closest condemned property.
+
+```{r}
+mean(df_top_condemned$proximity_to_condemned)
+```
+
+### 3.1 Splitting data, addressing unbalanced target class
+
+```{r}
+# using caret package
+# Set the seed for reproducibility
+set.seed(123)
+
+# Create a train-test split with stratification
+train_index <- createDataPartition(df_top_condemned$condemned, p = 0.8, list = FALSE, times = 1)
+
+# Create training and testing datasets
+train_data <- df_top_condemned[train_index, ]
+test_data <- df_top_condemned[-train_index, ]
+
+
+
+```
+
+To create an effective classification model, we want to understand the target class, in this case, if a property is condemned or not. First, look at how many condemned properties there are.
+
+```{r}
+table(df_top_condemned$condemned)
+table(train_data$condemned)
+table(test_data$condemned)
+```
+
+#### 3.1.1 The unbalanced data problem
+
+We see that the data is severely imbalanced, with the minority class (condemned) representing only about 5.6% of observations. This creates a problem where the logit produces statistically significant results but is unable to outperform the no information rate (see logit and confusion matrix below). The model is simply predicting that properties are not condemned every time (see 0.0 specificity).
+
+Any of the following models will look something like this:
+
+$$
+\text{condemned} = \beta_0 + \beta_1 \times \text{predictor}_1 + \beta_2 \times \text{predictor}_2 + \ldots + \beta_n \times \text{predictor}_n + \epsilon
+$$
+
+```{r}
+logit_top_condemned <- glm(condemned ~ 
+                             slope25 +
+                             year_built +
+                             corporation +
+                             Tenure_Owner_Occupied_Percentage +
+                             log(Median_HH_Income), 
+                           data = train_data, 
+                           family = binomial(link = "logit"))
+
+stargazer(logit_top_condemned, 
+          type = 'text',
+          digits = 3)
+```
+
+```{r}
+# Predict on the same data used for training
+predicted <- predict(logit_top_condemned, newdata = test_data, type = "response")
+
+# Convert predicted probabilities to binary predictions (0 or 1)
+predicted_class <- ifelse(predicted > 0.5, 1, 0)
+
+# Create confusion matrix
+conf_matrix <- confusionMatrix(factor(predicted_class), 
+                               factor(test_data$condemned))
+
+# Print confusion matrix
+print(conf_matrix)
+```
+
+#### 3.1.2 Upsampling and downsampling
+
+These methods require the target variable to be a factor object. Down-sampling removes observations from the over-represented class, while up-sampling copies observations from the minority class. Both methods can create artificially low variance since the observations are being copied or removed.
+
+```{r}
+
+train_data$condemned <- as.factor(train_data$condemned)
+test_data$condemned <- as.factor(test_data$condemned)
+
+set.seed(9560)
+
+# Downsample the training data
+down_train <- downSample(x = train_data[, 1:ncol(train_data)],
+                         y = train_data$condemned)
+# View the class distribution after downsampling
+table(down_train$condemned)
+
+#Upsample 
+up_train <- upSample(x = train_data[, 1:ncol(train_data)],
+                     y = train_data$condemned)
+# View the class distribution
+table(up_train$condemned)
+
+```
+
+```{r}
+set.seed(9560)
+down_logit <- glm(condemned ~ slope25 +
+                             year_built +
+                             corporation +
+                             Tenure_Owner_Occupied_Percentage +
+                             log(Median_HH_Income),
+                  data = down_train, 
+                  family = binomial(link = "logit"))
+
+# Fit logistic regression model to upsampled data
+up_logit <- glm(condemned ~ slope25 +
+                             year_built +
+                            corporation +
+                            Tenure_Owner_Occupied_Percentage +
+                             log(Median_HH_Income),
+                data = up_train,
+                family = binomial(link = "logit"))
+```
+
+```{r}
+# Predict on the test data using downsampled model
+down_predicted <- predict(down_logit, newdata = test_data, type = "response")
+down_predicted_class <- ifelse(down_predicted > 0.6, 1, 0)
+down_conf_matrix <- confusionMatrix(factor(down_predicted_class), factor(test_data$condemned))
+print("Confusion matrix for downsampled model:")
+print(down_conf_matrix)
+
+# Predict on the test data using upsampled model
+up_predicted <- predict(up_logit, newdata = test_data, type = "response")
+up_predicted_class <- ifelse(up_predicted > 0.6, 1, 0)
+up_conf_matrix <- confusionMatrix(factor(up_predicted_class), factor(test_data$condemned))
+print("Confusion matrix for upsampled model:")
+print(up_conf_matrix)
+
+```
+
+These models have lower accuracy overall, but improved on specificity, or True Negative rate.
+
+#### 3.1.3 ROSE and SMOTE
+
+The ROSE technique adds new synthetic data points to the minority class and downsamples the majority class the size. When using ROSE package, know that he current implementation of ROSE handles only continuous and categorical variables- so adjust df before loading all in the ROSE command. I included only variables I am including in my logistic regression.
+
+```{r}
+# Apply ROSE technique for oversampling
+df_oversampled <- ROSE(condemned ~ slope25 +
+                             year_built +
+                            corporation +
+                            Tenure_Owner_Occupied_Percentage +
+                             Median_HH_Income,
+                       data = df_top_condemned, seed = 123)$data
+
+# Check the class distribution before and after oversampling
+table(df_top_condemned$condemned)
+table(df_oversampled$condemned)
+```
+
+```{r}
+logit_ROSE <- glm(condemned ~ .,
+                    data = df_oversampled,
+                    family = binomial(link = "logit"))
+
+# Predict on test data
+predicted <- predict(logit_ROSE, newdata = test_data, type = "response")
+
+# Convert predicted probabilities to binary predictions (0 or 1)
+predicted_class <- ifelse(predicted > 0.5, 1, 0)
+
+# Create confusion matrix
+conf_matrix <- confusionMatrix(factor(predicted_class), factor(test_data$condemned))
+
+# Print confusion matrix
+print(conf_matrix)
+```
+
+```{r}
+# Apply SMOTE to increase the examples of the minority class
+# DMwR package has been removedremoved 
+#df_smote <- SMOTE(condemned ~ ., df, perc.over = 100, k = 5)
+
+# Check the class distribution after applying SMOTE
+#table(df_smote$condemned)
+```
+
+```{r}
+stargazer(logit_top_condemned, up_logit, down_logit, logit_ROSE,
+          type = 'text', 
+          digits = 3,
+          add.lines=list(c('Class Treatment', 'None','Up', 'Down', 'ROSE')))
+```
+
+## 4 Some visualizations
+
+```{r fig.height=8, fig.width=8}
+variables <- c("condemned", "slope25", "year_built", "corporation", "Tenure_Owner_Occupied_Percentage", "Median_HH_Income")
+
+# Subset the dataframe with selected variables
+df_subset <- df[, variables]
+
+# Calculate the correlation matrix
+correlation_matrix <- cor(df_subset)
+
+rounded_correlation <- round(correlation_matrix, 2)
+
+# Plot the correlation matrix using corrplot
+corrplot(rounded_correlation, method = "color", type = "upper", tl.col = "black", tl.srt = 45)
+```
+
+```{r}
+condemned_counts <- df_top_condemned %>%
+  group_by(own_type, condemned) %>%
+  summarise(count = n()) %>%
+  filter(condemned == 1) # Keep only condemned properties
+
+# Create a stacked bar plot
+ggplot(condemned_counts, aes(x = own_type)) +
+  geom_bar(aes(y = count, fill = "Condemned"), stat = "identity") +
+  geom_bar(data = df %>% filter(condemned == 0), aes(y = ..count.., fill = "Not Condemned"), stat = "count") +
+  labs(x = "Ownership Type", y = "Count of Properties",
+       fill = "") +
+  scale_fill_manual(values = c("Condemned" = "red", "Not Condemned" = "lightblue"),
+                    guide = guide_legend(reverse = TRUE)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels for better readability
+  scale_y_continuous(sec.axis = sec_axis(~./max(condemned_counts$count), name = "Proportion of Condemned Properties"))  # Secondary y-axis
+```
+
+```{r}
+df_top_condemned_sorted <- df_top_condemned[order(df_top_condemned$condemned, decreasing = TRUE),]
+
+ggplot(df_top_condemned_sorted, aes(x = reorder(census_tract, -condemned), y = condemned)) +
+  geom_bar(stat = "identity", fill = "skyblue", width = 0.5) +
+  labs(x = "Census Tract", y = "Number of Condemned Properties",
+       title = "Census Tracts with the Most Condemned Properties") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+```
+
+## 5 Lavaan: latent variable analysis
+
+```{r}
+
+model <- '
+    # Define latent variable
+    latent_variable =~ slope25 + year_built + Vacant_Housing_Units_Percentage +
+                      Tenure_Owner_Occupied_Percentage + log(Median_HH_Income)
+    
+    # Define indicator variables (observed variables)
+    condemned ~ latent_variable
+'
+
+# Fit the model
+fit <- sem(model, data = df_top_condemned, missing = "ML")
+
+# Print the results
+summary(fit)
+
+# Extract the factor scores (index)
+df$index <- fitted(fit)
+```
