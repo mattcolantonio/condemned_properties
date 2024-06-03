@@ -1,2 +1,10 @@
 This repo contains information on a project concerning condemned properties in the City of Pittsburgh.
-The code conatined was used to extract and create variables as well as model factors of property condemnation.
+The code contained was used to extract and create variables as well as model factors of property condemnation.
+
+Data comes from 
+  - the US Census American Community Survey (code for downloading using API included),
+  - City of Pittsburgh GIS files (for condemned properties and slope information) 
+  - and Regrid, a parcel data service. I was generously granted access to parcel data for Allegheny County. 
+
+Code for creating and combining variables/datasets is included as well. 
+
