@@ -7,4 +7,10 @@ Data comes from
   - and Regrid, a parcel data service. I was generously granted access to parcel data for Allegheny County. 
 
 Code for creating and combining variables/datasets is included as well. 
+The order in which scripts should be run:
+1. properties_data_merged.R (combines different parcel and property information)
+2. census_and_parcel.R (adds census demographic data to parcel dataset using Census API)
+3. spatial_variable_creation.R (creates distance from condemned datapoint, incorporates slope dataset built in QGIS)
+4. all_vars_cleaning.R (cleans up the dataset that includes all variables)
+5. logit_model.Rmd (some logit models for determining property condemnation)
 
