@@ -15,7 +15,7 @@ unique_census_tracts <- unique(parcel_data$census_tract)
 # Convert the unique census blocks to a list
 census_tract_list <- as.list(unique_census_tracts)
 
-census_api_key("e8c3122e8584f0de407bfdd90c617f2213408ffe")
+census_api_key("<enter key here>")
 
 # Set the desired year
 year <- 2021
